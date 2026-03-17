@@ -139,7 +139,11 @@ Listo. El backend queda corriendo en `http://localhost:8000` con hot-reload incl
 
 Verificar: `http://localhost:8000/health` → `{"status":"ok"}`
 
-> El `.env` con API keys ya está incluido. Para recrearlo: copiar `.env.example` y completar `GEMINI_API_KEY`, `PROPERTIES_API_URL` y `PROPERTIES_API_TOKEN`.
+> **Configurar variables de entorno:** Copiar `.env.example` a `.env` y completar los valores:
+> ```bash
+> cp .env.example .env
+> ```
+> Variables requeridas: `GEMINI_API_KEY`, `PROPERTIES_API_URL`, `PROPERTIES_API_TOKEN`.
 
 <details>
 <summary>Alternativa sin Docker (Python local)</summary>
