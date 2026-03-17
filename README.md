@@ -1,239 +1,269 @@
 # PropAssist AI
 
-Asistente inmobiliario inteligente con IA conversacional y datos reales de propiedades.
+Asistente inmobiliario conversacional con IA que busca propiedades reales a través de function calling.
 
-- **Backend**: FastAPI + Gemini 2.5 Flash con function calling
-- **Frontend**: React Native + Expo SDK 54 (TypeScript)
-
----
-
-## Requisitos previos
-
-| Herramienta | Versión | Verificar |
-|-------------|---------|-----------|
-| **Python** | 3.11+ | `python --version` |
-| **Node.js** | 18+ | `node --version` |
-| **npm** | 9+ | `npm --version` |
-| **Docker** (opcional) | 20+ | `docker --version` |
-| **Expo Go** (celular) | Última | App Store / Play Store |
+**Backend:** FastAPI + Gemini 2.5 Flash (function calling nativo) · **Mobile:** React Native + Expo SDK 54 (TypeScript)
 
 ---
 
-## 1. Levantar el Backend
+## Arquitectura
 
-### PowerShell (Windows)
+```mermaid
+graph TB
+    subgraph M["Mobile · React Native · Expo"]
+        Screen[ChatScreen] --> Hook[useConversation]
+        Hook -- dispatch --> CTX[ConversationContext]
+        CTX -- state --> Screen
+        Hook --> SVC[assistant.ts]
+        CTX -. persiste .-> AS[(AsyncStorage)]
+    end
 
-```powershell
-cd backend
+    subgraph B["Backend · FastAPI"]
+        API[routes.py · POST /chat] --> AGT[agent.py · Loop]
+        AGT --> TD{Tool dispatch}
+        TD --> SL[search_locations]
+        TD --> LP[list_properties]
+        TD --> GPD[get_property_detail]
+        TD --> CC[convert_currency]
+    end
 
-# Crear entorno virtual e instalar dependencias
-python -m venv venv
-.\venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+    LLM[Gemini 2.5 Flash]
+    PROP[API Propiedades]
 
-# Iniciar servidor (0.0.0.0 permite acceso desde el celular)
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+    SVC -- POST /chat --> API
+    AGT -- prompt + tools --> LLM
+    LLM -- respuesta o function_call --> AGT
+    SL & LP & GPD -- httpx --> PROP
 ```
 
-### Git Bash / macOS / Linux
+> El Agent Loop itera hasta 10 veces: Gemini puede pedir múltiples tools en secuencia
+> (ej: `search_locations` → `list_properties` → `get_property_detail`) antes de generar la respuesta final.
 
-```bash
-cd backend
+### Flujo de una consulta
 
-python -m venv venv
-source venv/bin/activate          # macOS/Linux
-# source venv/Scripts/activate    # Windows Git Bash
-pip install -r requirements.txt
+```mermaid
+sequenceDiagram
+    participant U as Usuario
+    participant M as Mobile
+    participant B as Backend
+    participant G as Gemini
+    participant P as API Props
 
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+    U->>M: Busco depa en Las Condes
+    M->>B: POST /chat con message + history
+
+    loop Agent Loop (max 10 iter)
+        B->>G: contents + system prompt + tools
+        G-->>B: function_call search_locations
+        B->>P: GET /locations?search=las condes
+        P-->>B: keyName cl/.../las-condes
+        B->>G: function_response con keyName
+
+        G-->>B: function_call list_properties
+        B->>P: GET /properties con filtros
+        P-->>B: propiedades resumidas
+        B->>G: function_response con propiedades
+    end
+
+    G-->>B: texto final sin function_calls
+    B-->>M: ChatResponse
+    M-->>U: burbuja con respuesta formateada
 ```
-
-### Docker (alternativa — sin instalar Python)
-
-```bash
-cd backend
-docker compose up --build
-```
-
-> **Nota sobre `.env`**: El archivo `.env` con las API keys reales ya está configurado. Si necesitas recrearlo, copia `.env.example` y rellena los valores.
-
-### Verificar que funciona
-
-Abrir en el navegador o ejecutar:
-
-```
-http://localhost:8000/health
-→ {"status":"ok"}
-```
-
----
-
-## 2. Levantar el Frontend
-
-En **otra terminal**:
-
-```powershell
-cd mobile
-
-# Instalar dependencias (solo la primera vez)
-npm install --legacy-peer-deps
-
-# Iniciar servidor de desarrollo
-npx expo start
-```
-
-Esto muestra un QR code y un menú interactivo.
-
----
-
-## 3. Dónde verlo
-
-### PC — Navegador web
-
-1. Con Expo corriendo, presiona **`w`** en la terminal
-2. Se abre en **http://localhost:8081**
-3. Funciona inmediatamente (el backend está en `localhost:8000`)
-
-### iPhone — Expo Go
-
-1. Instala **Expo Go** desde la App Store
-2. Conecta tu iPhone a la **misma red WiFi** que tu PC
-3. Escanea el **QR code** de la terminal con la cámara del iPhone
-4. La app se abre en Expo Go y se conecta al backend automáticamente
-
-### Android — Expo Go
-
-1. Instala **Expo Go** desde Play Store
-2. Misma red WiFi que tu PC
-3. Presiona **`a`** en la terminal de Expo, o escanea el QR desde la app Expo Go
-
-> **Importante**: El backend DEBE estar levantado con `--host 0.0.0.0` (no solo `localhost`) para que el celular pueda conectarse. La app detecta la IP de tu PC automáticamente.
-
----
-
-## Resumen rápido
-
-```
-Terminal 1 (Backend):
-  cd backend
-  .\venv\Scripts\Activate.ps1
-  uvicorn app.main:app --host 0.0.0.0 --port 8000
-
-Terminal 2 (Frontend):
-  cd mobile
-  npx expo start
-  → Presiona 'w' para web, o escanea QR para celular
-```
-
-| Qué | URL / Acceso |
-|-----|-------------|
-| Backend API | http://localhost:8000 |
-| Health check | http://localhost:8000/health |
-| Frontend web | http://localhost:8081 (presionar `w`) |
-| Frontend celular | Escanear QR con Expo Go |
 
 ---
 
 ## Estructura del proyecto
 
 ```
-/
-├── backend/                  # FastAPI + Gemini + Function Calling
+├── backend/                     # FastAPI + Gemini + Function Calling
 │   ├── app/
-│   │   ├── api/              # POST /chat endpoint
-│   │   ├── core/             # Agent, prompts, tools (function calling)
-│   │   ├── schemas/          # Pydantic models
-│   │   └── services/         # Cliente HTTP → API propiedades
-│   ├── Dockerfile
-│   ├── docker-compose.yml
-│   ├── .env                  # API keys (no versionado)
+│   │   ├── main.py              # Entry point, CORS, /health
+│   │   ├── config.py            # Settings vía .env (Pydantic)
+│   │   ├── api/routes.py        # POST /chat endpoint
+│   │   ├── core/
+│   │   │   ├── agent.py         # Loop agentico: Gemini ↔ tools (max 10 iter, retry con backoff)
+│   │   │   ├── prompts.py       # System prompt del asistente inmobiliario
+│   │   │   └── tools.py         # 4 FunctionDeclarations para Gemini
+│   │   ├── schemas/             # Pydantic: ChatRequest, ChatResponse, Message
+│   │   └── services/
+│   │       └── properties.py    # Cliente HTTP async → API propiedades + convert_currency
+│   ├── tests/                   # Unit + integration tests
+│   ├── Dockerfile               # python:3.11-slim
+│   ├── docker-compose.yml       # Alternativa sin instalar Python
 │   └── requirements.txt
 │
-├── mobile/                   # React Native + Expo SDK 54
-│   ├── app/                  # Screens (Expo Router)
-│   ├── components/           # MessageBubble, InputBar, Header, etc.
-│   ├── context/              # ConversationContext (useReducer)
-│   ├── hooks/                # useConversation
-│   ├── services/             # POST /chat al backend
-│   ├── types/                # TypeScript interfaces
-│   └── constants/            # Config (URLs, timeouts)
+├── mobile/                      # React Native + Expo SDK 54
+│   ├── app/
+│   │   ├── _layout.tsx          # Root: ConversationProvider + Stack
+│   │   └── index.tsx            # Pantalla principal del chat
+│   ├── components/
+│   │   ├── MessageBubble.tsx    # Burbuja con formato (bold, URLs clickeables)
+│   │   ├── MessageList.tsx      # FlatList con auto-scroll
+│   │   ├── InputBar.tsx         # Input + botón enviar (animado)
+│   │   ├── Header.tsx           # Título + botón "Nuevo chat" con confirmación
+│   │   ├── TypingIndicator.tsx  # 3 dots animados (reanimated)
+│   │   ├── ErrorBanner.tsx      # Banner rojo con retry/dismiss
+│   │   └── SuggestionChips.tsx  # Chips iniciales: "Deptos en La Reina", etc.
+│   ├── context/
+│   │   └── ConversationContext.tsx  # useReducer + AsyncStorage (persistencia)
+│   ├── hooks/
+│   │   └── useConversation.ts   # send/retry/clear + AbortController + haptics
+│   ├── services/
+│   │   └── assistant.ts         # POST /chat con timeout 60s y error handling
+│   ├── types/conversation.ts    # Message, Role, ConversationState
+│   └── constants/config.ts      # URL dinámica por plataforma (web/iOS/Android)
 │
-├── PLAN.md                   # Plan de implementación detallado
-└── README.md                 # Este archivo
+└── README.md
 ```
+
+---
+
+## Setup
+
+### Requisitos
+
+| Herramienta | Versión | Para qué |
+|-------------|---------|----------|
+| Docker | 20+ | Backend (contenedor Python + FastAPI) |
+| Node.js | 18+ | Frontend mobile (Expo dev server) |
+| Expo Go | Última | Ejecutar la app en celular físico |
+
+### 1. Backend (Docker)
+
+```bash
+cd backend
+docker compose up --build
+```
+
+Listo. El backend queda corriendo en `http://localhost:8000` con hot-reload incluido.
+
+Verificar: `http://localhost:8000/health` → `{"status":"ok"}`
+
+> El `.env` con API keys ya está incluido. Para recrearlo: copiar `.env.example` y completar `GEMINI_API_KEY`, `PROPERTIES_API_URL` y `PROPERTIES_API_TOKEN`.
+
+<details>
+<summary>Alternativa sin Docker (Python local)</summary>
+
+```bash
+cd backend
+python -m venv venv
+
+# Windows PowerShell:  .\venv\Scripts\Activate.ps1
+# macOS/Linux/Git Bash: source venv/bin/activate
+
+pip install -r requirements.txt
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+</details>
+
+### 2. Mobile (Expo)
+
+En otra terminal:
+
+```bash
+cd mobile
+npm install --legacy-peer-deps
+npx expo start
+```
+
+| Plataforma | Instrucción |
+|------------|-------------|
+| Web | Presionar `w` → se abre `http://localhost:8081` |
+| iPhone | Escanear QR con la cámara (requiere Expo Go + misma red WiFi) |
+| Android | Presionar `a` o escanear QR desde Expo Go |
+
+> **Nota:** El backend corre con `--host 0.0.0.0` (ya configurado en Docker) para que el celular pueda conectarse. La app detecta la IP del PC automáticamente.
+
+### ¿Por qué solo el backend está dockerizado?
+
+El backend es un servidor API stateless — Docker lo encapsula perfecto: Python, dependencias y `.env` en un solo `docker compose up`.
+
+El frontend mobile **no se puede dockerizar de forma práctica** porque Expo Go necesita comunicación directa con el host: escaneo de QR, hot reload vía WebSocket, y acceso a la red local para que el celular encuentre el dev server. Meter esto en un contenedor requeriría exponer múltiples puertos, configurar network_mode=host, y perdería las ventajas de Docker sin ganar nada. El dev server de Expo está diseñado para correr directamente en la máquina del desarrollador.
 
 ---
 
 ## Decisiones técnicas
 
-### LLM: Gemini 2.5 Flash (Google)
+### LLM: Gemini 2.5 Flash
 
-Elegí Gemini por tres razones principales:
+Elegí Gemini por tres razones:
 
-1. **Function calling nativo**: Gemini soporta tool use de forma integrada en su SDK (`google-genai`), lo que permite que el modelo decida cuándo consultar la API de propiedades sin necesidad de parsear JSON manualmente ni de prompt hacks. Esto simplifica enormemente el flujo del agente.
-2. **Tier gratuito generoso**: A diferencia de GPT-4o-mini que tiene un free trial limitado, Gemini ofrece un tier gratuito suficiente para desarrollo y demostración sin costo.
-3. **Baja latencia**: Flash está optimizado para velocidad, lo que se traduce en respuestas más rápidas en el chat — crítico para una buena UX conversacional.
+1. **Function calling nativo** — El SDK `google-genai` soporta tool use integrado. El modelo decide cuándo consultar la API de propiedades sin parsear JSON manualmente. Esto simplifica el loop agentico: Gemini recibe las definiciones de 4 tools, llama las que necesita, recibe los resultados, y genera la respuesta final.
 
-**Trade-off**: Groq (Llama 3.1) tiene latencia aún menor, pero su soporte de function calling es menos maduro y requiere parsing manual de las llamadas a herramientas. Claude Haiku ofrece excelente calidad pero el tier gratuito es más restrictivo.
+2. **Tier gratuito generoso** — A diferencia de GPT-4o-mini (free trial limitado) o Claude Haiku (tier más restrictivo), Gemini ofrece uso gratuito suficiente para desarrollo y demostración.
 
-### Backend: FastAPI + httpx + Pydantic
+3. **Baja latencia** — Flash está optimizado para velocidad, crítico para UX conversacional donde cada segundo de espera se siente.
 
-- **FastAPI**: Framework async nativo de Python. Validación automática de request/response con Pydantic, documentación OpenAPI generada automáticamente, y soporte nativo para `async/await` — ideal para un backend que hace múltiples llamadas HTTP concurrentes (API de propiedades + LLM).
-- **httpx**: Cliente HTTP async compatible con el event loop de FastAPI. API idéntica a `requests` pero con soporte de `async/await`. Elegido sobre `aiohttp` por su API más limpia y mejor integración con el ecosistema Python moderno.
-- **Pydantic**: Validación de datos en request/response con tipos estrictos. Integración nativa con FastAPI para serialización/deserialización automática.
+**Trade-off considerado:** Groq (Llama 3.1) tiene latencia aún menor, pero su soporte de function calling es menos maduro y requiere parsing manual de las llamadas a herramientas.
 
-### Frontend: Expo SDK 54 + Expo Router + Context API
+### Backend: FastAPI + httpx
 
-- **Expo SDK 54**: La última versión estable del SDK. Permite desarrollo multiplataforma (iOS, Android, Web) con un solo codebase y sin necesidad de configurar Xcode/Android Studio para desarrollo.
-- **Expo Router**: File-based routing inspirado en Next.js. Para una app de una sola pantalla (chat) es suficiente, y deja la puerta abierta a agregar más pantallas sin refactor.
-- **Context + useReducer**: Para el estado del chat (mensajes, loading, error), un reducer es suficiente y predecible. Zustand o Redux agregarían una dependencia sin beneficio real — el estado es local a la conversación y no requiere middleware ni persistencia compleja.
-- **StyleSheet nativo**: Sin NativeWind ni Tailwind. Para una UI de chat con pocos componentes, StyleSheet ofrece rendimiento óptimo (estilos compilados a nativos) sin el overhead de configuración de NativeWind. Los estilos son colocados junto a cada componente para mantener cohesión.
+- **FastAPI**: async nativo, validación automática con Pydantic, documentación OpenAPI generada — ideal para un backend que hace llamadas HTTP concurrentes (API propiedades + LLM).
+- **httpx**: cliente HTTP async con API idéntica a `requests`. Elegido sobre `aiohttp` por su API más limpia.
+- **Pydantic**: validación estricta de `ChatRequest` (message 1-2000 chars + history) y `ChatResponse`.
+
+### Frontend: Expo SDK 54 + Context + useReducer
+
+- **Expo Router**: file-based routing. Para una app de una pantalla es suficiente y deja la puerta abierta a más pantallas sin refactor.
+- **Context + useReducer**: estado del chat (messages, loading, error) con 5 acciones predecibles (`ADD_MESSAGE`, `SET_LOADING`, `SET_ERROR`, `LOAD`, `CLEAR`). No hay múltiples stores cruzados, ni middleware, ni estado compartido entre pantallas — `useReducer` resuelve esto sin dependencias externas. Si la app creciera a múltiples pantallas con estado compartido complejo, ahí migrar a Zustand tendría sentido.
+- **StyleSheet nativo**: sin NativeWind. Para una UI de chat con pocos componentes, StyleSheet ofrece rendimiento óptimo sin overhead de configuración.
+
+### ¿Por qué no SSR ni SEO?
+
+**SSR** (Server-Side Rendering) es un concepto web donde el servidor pre-renderiza HTML para carga rápida e indexación. Esta app es **React Native** — renderiza componentes nativos directamente en el dispositivo, no hay HTML ni browser. SSR no existe como concepto en apps nativas.
+
+**SEO** requiere contenido público indexable. Esta app es un **chat privado** — cada conversación es única del usuario, no hay URLs públicas ni contenido que Google deba indexar. Por la misma razón que WhatsApp no necesita SEO.
+
+**¿Cuándo sí aplicarían?** Si se construyera un portal web público de propiedades con URLs indexables (ej: `propassist.com/propiedades/las-condes`), ahí sí se necesitaría SSR + SEO — pero sería un proyecto separado (Next.js), no esta app de chat.
 
 ---
 
 ## Decisiones de UX
 
-### Diseño general
-
-La interfaz sigue el patrón de **app de mensajería** (WhatsApp, iMessage) por familiaridad. El usuario ya sabe cómo funciona un chat — no necesita aprender una interfaz nueva.
-
-### Decisiones específicas
+La interfaz sigue el patrón de **app de mensajería** (WhatsApp, iMessage) por familiaridad — el usuario ya sabe cómo funciona un chat.
 
 | Decisión | Por qué |
 |----------|---------|
-| **Burbujas diferenciadas** (azul usuario, gris IA) | Distinción visual inmediata de quién dice qué. Los colores siguen convenciones establecidas de apps de mensajería. |
-| **Typing indicator animado** (tres puntos pulsantes) | Feedback visual mientras la IA procesa. Sin esto, el usuario no sabe si la app se colgó o está trabajando. Elegido sobre spinner porque se siente más conversacional. |
-| **Suggestion chips al inicio** | Reducen la fricción del "¿qué le pregunto?". Muestran búsquedas comunes para que el usuario pueda empezar con un tap. Desaparecen una vez iniciada la conversación para no distraer. |
-| **Error banner con retry** | Los errores de red/API son inevitables. En vez de un alert modal que interrumpe, un banner inline muestra el error y ofrece reintentar con un tap — sin perder el contexto de la conversación. |
-| **Persistencia con AsyncStorage** | La conversación se guarda automáticamente. Si el usuario cierra la app y vuelve, encuentra su conversación donde la dejó. |
-| **Haptic feedback** | Vibración sutil al enviar mensaje y al recibir respuesta. Refuerza la sensación de interactividad en dispositivos móviles. |
-| **Auto-scroll** | Al recibir un mensaje nuevo, el chat hace scroll automático al final. Comportamiento esperado en cualquier app de mensajería. |
-| **Max width 600px en web** | En pantallas grandes (desktop), el chat se centra con ancho máximo para mantener legibilidad. Líneas de texto demasiado largas son difíciles de leer. |
+| **Burbujas diferenciadas** (azul usuario, gris IA) | Distinción visual inmediata. Colores convencionales de apps de mensajería. |
+| **Typing indicator** (3 dots animados) | Feedback visual mientras la IA procesa. Elegido sobre spinner porque se siente más conversacional. |
+| **Suggestion chips al inicio** | Reducen la fricción del "¿qué le pregunto?". Desaparecen al iniciar la conversación. |
+| **Error banner con retry** | Banner inline que muestra el error y ofrece reintentar sin perder contexto (en vez de un alert modal). |
+| **Persistencia (AsyncStorage)** | La conversación se guarda automáticamente. Si el usuario cierra la app, encuentra su conversación al volver. |
+| **Haptic feedback** | Vibración sutil al enviar y recibir mensajes. Refuerza la interactividad en mobile. |
+| **Auto-scroll** | Scroll automático al final al recibir mensaje nuevo. |
+| **Max width 600px en web** | En desktop, el chat se centra para mantener legibilidad. |
 
 ---
 
-## ¿Qué mejorarías con 1 semana más?
+## ¿Qué mejoraría con 1 semana más?
 
-### Respuestas en streaming (SSE)
-Implementar Server-Sent Events para que la respuesta de la IA aparezca palabra por palabra en tiempo real, en vez de esperar a que se genere completa. Esto reduce drásticamente la percepción de latencia — el usuario empieza a leer antes de que termine la generación.
+### Streaming (SSE)
+Respuestas palabra por palabra en tiempo real con Server-Sent Events. El usuario empieza a leer antes de que termine la generación — reduce drásticamente la percepción de latencia.
 
-### Tarjetas de propiedades enriquecidas
-En vez de mostrar las propiedades solo como texto, renderizar **tarjetas con imagen, precio, ubicación y características clave** directamente en el chat. Esto haría la experiencia mucho más visual y permitiría al usuario evaluar propiedades de un vistazo.
+### Tarjetas de propiedades
+En vez de texto plano, **tarjetas con imagen, precio, ubicación y características** directamente en el chat. Evaluación visual de propiedades de un vistazo.
 
 ### Mapa interactivo
-Integrar un mapa (Google Maps o Mapbox) que muestre la ubicación de las propiedades encontradas. El usuario podría ver dónde están las propiedades y hacer tap para ver detalles. Requiere coordenadas de la API.
+Google Maps o Mapbox mostrando la ubicación de las propiedades encontradas. Tap para ver detalles.
 
 ### Historial de conversaciones
-Permitir múltiples conversaciones guardadas con un sidebar o lista. Actualmente se persiste una sola conversación. Con historial, el usuario podría volver a búsquedas anteriores sin perder contexto.
+Múltiples conversaciones guardadas con sidebar. Actualmente se persiste una sola conversación.
 
 ### Búsqueda por voz
-Integrar reconocimiento de voz (Expo Speech/Whisper) para que el usuario pueda dictar su búsqueda en vez de escribir. Especialmente útil en mobile donde escribir es más lento.
+Reconocimiento de voz (Expo Speech/Whisper) para dictar la búsqueda. Especialmente útil en mobile.
 
 ### Tests E2E
-Agregar tests end-to-end con Detox (mobile) y Pytest + httpx para el backend. Actualmente hay tests unitarios básicos — falta cobertura de flujos completos como "usuario busca propiedad → recibe resultados → pide detalles".
+Detox (mobile) + Pytest con httpx (backend). Cubrir flujos completos: "busca propiedad → recibe resultados → pide detalles".
 
 ### Caché inteligente
-Cachear respuestas de la API de propiedades para búsquedas frecuentes (ej: "departamentos en Las Condes"). Reduciría latencia y consumo de API. Implementable con Redis o incluso un TTL cache en memoria.
+Cachear respuestas de la API de propiedades para búsquedas frecuentes. Redis o TTL cache en memoria.
 
 ### Dark mode
-Soporte de tema oscuro respetando las preferencias del sistema operativo. La infraestructura de StyleSheet ya lo soporta con `useColorScheme()`.
+Tema oscuro respetando preferencias del SO con `useColorScheme()`.
+
+### Deploy en nube y multi-tenancy
+Actualmente el backend corre local con Docker. Para servir a múltiples clientes simultáneos: deploy en un servicio como Cloud Run o AWS ECS, base de datos (PostgreSQL) para persistir conversaciones por usuario, y autenticación (JWT o similar) para aislar sesiones. El backend ya es stateless por request — escala horizontalmente sin cambios en la lógica del agent.
+
+### Historial multi-conversación
+Hoy se persiste una sola conversación en AsyncStorage (client-side). Con un backend persistente, cada usuario tendría múltiples conversaciones guardadas con título auto-generado, listadas en un sidebar. Requiere modelo de datos (users, conversations, messages) y migrar la persistencia del cliente al servidor.
